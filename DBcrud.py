@@ -8,13 +8,13 @@ import redis
 import pymongo
 import json
 
-from ..DjSpider.DBconfig import *
+from DjSpider.DBconfig import *
 
 
 class Mysql_crud(object):
-    def __init__(self):
+    def __init__(self,host=mysql_host, port=mysql_port, user=mysql_user, passwd=mysql_passwd, db=mysql_db, charset=mysql_charset):
         try:
-            self.mysql_conn = pymysql.connect(host=mysql_host, port=mysql_port, user=mysql_user, passwd=mysql_passwd, db=mysql_db, charset=mysql_charset)
+            self.mysql_conn = pymysql.connect(host=host, port=port, user=user, passwd=passwd, db=db, charset=charset)
             info = 'mysql connect Success'
             # print(info)
         except Exception as e:
@@ -85,6 +85,7 @@ class Mysql_crud(object):
         try:
             cursor.execute(sql)
             print('已删除')
+            return 1
         except Exception as e:
             print(e)
             print('delete data ERROR')
@@ -93,7 +94,6 @@ class Mysql_crud(object):
 
     # 更新mysql数据不能set主键，所以set要去除主键,这里是将主键单独分开
     def mysql_update_data(self, table, data, pr, key, val):
-
         if isinstance(data, dict):
             conn = self.mysql_conn
             cursor = conn.cursor()
@@ -102,6 +102,7 @@ class Mysql_crud(object):
             value = tuple(data[i] for i in data)
             try:
                 cursor.execute('update %s set %s where %s = "%s"' % (table, (('="%s",'.join(field) + '="%s"') % value), key, val))
+                return 1
             except Exception as e:
                 print(e)
                 print('update data ERROR')
@@ -115,9 +116,9 @@ class Mysql_crud(object):
 
 
 class Redis_crud(object):
-    def __init__(self):
+    def __init__(self, host=redis_host, port=redis_port, db=redis_db, password=redis_passwd, decode_responses=True):
         try:
-            self.redis_conn = redis.Redis(host=redis_host, port=redis_port, db=redis_db, password=redis_passwd, decode_responses=True)
+            self.redis_conn = redis.Redis(host=host, port=port, db=db, password=password, decode_responses=decode_responses)
             info = 'redis connect Success'
             # print(info)
         except Exception as e:
@@ -133,18 +134,22 @@ class Redis_crud(object):
             logging.warning(info)
             print(logging.warning('----------------------'))
 
-    # set都是字符串
+    # set都是字符串 set_add flg:1 添加成功 flg:0 重复数据
 
     def set_add(self, setName, data):
+        # success flg:1
         if isinstance(data, dict):
             value = json.dumps(data)
             conn = self.redis_conn
-            conn.sadd(setName, value)
+            flg = conn.sadd(setName, value)
         elif isinstance(data, str):
             conn = self.redis_conn
-            conn.sadd(setName, data)
+            flg = conn.sadd(setName, data)
         else:
-            print('ERROR:data type must be str or dict')        
+            print(setName,data)
+            print('ERROR:data type must be str or dict')
+            return False
+        return flg
 
     def set_pop(self, setName):
         conn = self.redis_conn
@@ -152,8 +157,11 @@ class Redis_crud(object):
         if val:
             value = json.loads(val)
             return value
-        else:
-            print('set is empty now')
+
+    def set_count(self, setName):
+        conn = self.redis_conn
+        count = conn.scard(setName)
+        return count
 
     def list_lpush(self, listName, data):
         if isinstance(data, dict):
@@ -195,11 +203,55 @@ class Redis_crud(object):
         else:
             print('list is empty now')
 
+    def hash_set(self, hashName, key, val):
+        if isinstance(val, dict):
+            val = json.dumps(val)
+            conn = self.redis_conn
+            flg = conn.hset(hashName, key, val)
+        elif isinstance(val, str):
+            conn = self.redis_conn
+            flg = conn.hset(hashName, key, val)
+        else:
+            print('ERROR:data type must be str or dict')
+            return False
+        return flg
+
+    def hash_get(self, hashName, key):
+        conn = self.redis_conn
+        flg = conn.hget(hashName, key)
+        return flg
+
+    def hash_mset(self, hashName, data):
+        conn = self.redis_conn
+        flg = conn.hmset(hashName, data)
+        return flg
+
+    def hash_mget(self, hashName, data):
+        conn = self.redis_conn
+        flg = conn.hmget(hashName, data)
+        return flg
+
+    def hash_del(self, hashName, key):
+        conn = self.redis_conn
+        flg = conn.hdel(hashName, key)
+        return flg
+
+    def hash_len(self, hashName):
+        conn = self.redis_conn
+        count = conn.hlen(hashName)
+        return count
+
+    def hash_hexists(self, hashName, key):
+        # flg: True False
+        conn = self.redis_conn
+        flg = conn.hexists(hashName, key)
+        return flg
+
 
 class Mongo_crud(object):
-    def __init__(self):
+    def __init__(self, host=mongo_host, port=mongo_port):
         try:
-            self.mongo_conn = pymongo.MongoClient(host=mongo_host, port=mongo_port)
+            self.mongo_conn = pymongo.MongoClient(host=host, port=port)
             db = self.mongo_conn[mongo_db]
             db.authenticate(mongo_user, mongo_passwd)
             info = 'mongo connect Success'
@@ -244,7 +296,7 @@ class Mongo_crud(object):
             print('update data ERROR')
 
     def mongo_output_data(self, type, mongo_collection):
-        db = self.mongo.mongo_conn[mongo_db]
+        db = self.mongo_conn[mongo_db]
         collection = db[mongo_collection]
         data={}
         data['type'] = type
@@ -260,24 +312,27 @@ class Mongo_crud(object):
 
 
 class Switch_db(object):
-    def __init__(self, *args):
-        for db in args:
-            if db == 'none':
-                print('db is not use')
-            elif db == "mysql":
-                self.mysql = Mysql_crud()
-            elif db == "redis":
-                self.redis = Redis_crud()
-            elif db == "mongo":
-                self.mongo = Mongo_crud()
-            else:
-                self.mysql = Mysql_crud()
-                self.redis = Redis_crud()
-                self.mongo = Mongo_crud()
+    def __init__(self):
+            # if db is None:
+            #     print('db is not use')
+            # elif db == "mysql2redis" or db == "redis2mysql":
+            #     self.mysql = Mysql_crud()
+            #     self.redis = Redis_crud()
+            # elif db == "mysql2mongo" or db == "mongo2mysql":
+            #     self.mysql = Mysql_crud()
+            #     self.mongo = Mongo_crud()
+            # elif db == "redis2mongo" or db == "mongo2redis":
+            #     self.redis = Redis_crud()
+            #     self.mongo = Mongo_crud()
+            # else:
+            self.mysql = Mysql_crud()
+            self.redis = Redis_crud()
+            self.mongo = Mongo_crud()
 
     def redis_to_mysql(self, setName, table):
         data = self.redis.set_pop(setName)
-        self.mysql.mysql_insert_data(table, data)
+        flg = self.mysql.mysql_insert_data(table, data)
+        return flg
 
     def redis_to_mongo(self, setName, type, mongo_collection):
         value = self.redis.set_pop(setName)
@@ -348,7 +403,6 @@ class Switch_db(object):
 
 if __name__ == "__main__":
     print('okok')
-
 
 
 
